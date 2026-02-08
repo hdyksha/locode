@@ -147,9 +147,14 @@ Just output the raw JSON object.
                 return f"Error writing file: {e}"
 
         elif name == "run_command":
+            command = args["command"]
+            self.console.print(f"[bold yellow]Executing command:[/bold yellow] {command}")
+            if not Confirm.ask("Do you want to run this command?"):
+                return "Error: User cancelled command execution."
+
             import subprocess
             try:
-                result = subprocess.run(args["command"], shell=True, capture_output=True, text=True)
+                result = subprocess.run(command, shell=True, capture_output=True, text=True)
                 return f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
             except Exception as e:
                 return f"Error running command: {e}"
