@@ -3,7 +3,10 @@ import json
 from openai import OpenAI
 from typing import List, Dict, Any
 from .tools import TOOLS
+from .utils import is_safe_path, show_diff
 from rich.console import Console
+from rich.prompt import Confirm
+import os
 
 class LocodeAgent:
     def __init__(self, model: str = "llama3.1"):
@@ -59,19 +62,49 @@ class LocodeAgent:
                 return message.content
 
     def _execute_tool(self, name: str, args: Dict[str, Any]) -> str:
+        current_dir = os.getcwd()
+
         if name == "read_file":
+            path = args["path"]
+            if not is_safe_path(current_dir, path):
+                return f"Error: Access denied. Cannot read file outside of {current_dir}"
+            
             try:
-                with open(args["path"], "r") as f:
+                with open(path, "r") as f:
                     return f.read()
             except Exception as e:
                 return f"Error reading file: {e}"
+
         elif name == "write_file":
+            path = args["path"]
+            content = args["content"]
+            
+            if not is_safe_path(current_dir, path):
+                return f"Error: Access denied. Cannot write file outside of {current_dir}"
+
+            # If file exists, show diff and ask for confirmation
+            if os.path.exists(path):
+                self.console.print(f"[bold yellow]File already exists:[/bold yellow] {path}")
+                self.console.print("Showing diff:")
+                show_diff(path, content)
+                if not Confirm.ask("Do you want to overwrite this file?"):
+                    return "Error: User cancelled file write."
+            else:
+                self.console.print(f"[bold green]Creating new file:[/bold green] {path}")
+                self.console.print("Content preview:")
+                self.console.print(content[:500] + ("..." if len(content) > 500 else ""))
+                if not Confirm.ask("Do you want to create this file?"):
+                    return "Error: User cancelled file creation."
+            
             try:
-                with open(args["path"], "w") as f:
-                    f.write(args["content"])
-                return f"Successfully wrote to {args['path']}"
+                # Ensure directory exists
+                os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+                with open(path, "w") as f:
+                    f.write(content)
+                return f"Successfully wrote to {path}"
             except Exception as e:
                 return f"Error writing file: {e}"
+
         elif name == "run_command":
             import subprocess
             try:
