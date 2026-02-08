@@ -17,7 +17,13 @@ class LocodeAgent:
         )
         self.model = model
         self.history = [
-            {"role": "system", "content": "You are a helpful AI coding assistant. You can read files, write files, and run commands. Always use the provided tools to interact with the system."}
+            {"role": "system", "content": """You are a helpful AI coding assistant.
+You can read files, write files, and run commands.
+Always use the provided tools to interact with the system.
+If you use a tool, output ONLY the JSON object for the tool call.
+Do NOT use markdown code blocks like ```python or ```json for the tool call.
+Just output the raw JSON object.
+"""}
         ]
 
     def run(self, instruction: str):
@@ -57,6 +63,41 @@ class LocodeAgent:
                         "content": str(tool_result),
                     })
             else:
+                # Fallback: Check if content is a JSON tool call (common in some local models)
+                tool_executed = False
+                try:
+                    content = message.content.strip()
+                    # Strip markdown code blocks if present
+                    if content.startswith("```") and content.endswith("```"):
+                        content = content.strip("`")
+                        if content.startswith("json"):
+                            content = content[4:]
+                        content = content.strip()
+                    
+                    # Basic check to see if it looks like JSON
+                    if content.startswith("{") and content.endswith("}"):
+                        data = json.loads(content)
+                        if "name" in data and "arguments" in data:
+                            function_name = data["name"]
+                            function_args = data["arguments"]
+                            self.console.print(f"[bold magenta][Agent] Calling tool (JSON fallback):[/bold magenta] {function_name} with args: {function_args}")
+                            
+                            # Execute tool
+                            tool_result = self._execute_tool(function_name, function_args)
+                            
+                            self.history.append(message)
+                            # Since we don't have a tool_call_id, we append the result as a user message to guide the model
+                            self.history.append({
+                                "role": "user",
+                                "content": f"Tool '{function_name}' output: {tool_result}"
+                            })
+                            tool_executed = True
+                except json.JSONDecodeError:
+                    pass
+
+                if tool_executed:
+                    continue
+
                 self.history.append(message)
                 self.console.print(f"[bold green][Agent] Final Answer:[/bold green] {message.content}")
                 return message.content
