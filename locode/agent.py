@@ -42,6 +42,20 @@ Explanations:
 - `final_answer`: Final response to the user. Required if action is "finish".
 
 IMPORTANT: output ONLY the JSON object. Do not wrap it in markdown code blocks.
+- Do NOT use triple quotes (''' or \"\"\") for strings.
+- Escape all newlines within strings as \\n.
+- Ensure the JSON is valid and parsable.
+
+Example of correct JSON output:
+{{
+  "thought": "I will create a file with multi-line content.",
+  "action": "tool",
+  "tool_name": "write_file",
+  "tool_args": {{
+    "path": "example.txt",
+    "content": "Line 1\\nLine 2\\nLine 3"
+  }}
+}}
 """
         self.history = [
             {"role": "system", "content": self.system_prompt}
