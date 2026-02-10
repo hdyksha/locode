@@ -1,12 +1,17 @@
 import os
 import json
-from openai import OpenAI
+import re
+import subprocess
 from typing import List, Dict, Any
-from .tools import TOOLS
-from .utils import is_safe_path, show_diff
+from openai import OpenAI
 from rich.console import Console
 from rich.prompt import Confirm
-import os
+from rich.live import Live
+from rich.text import Text
+
+from .tools import TOOLS
+from .utils import is_safe_path, show_diff
+from .schema import AgentAction
 
 class LocodeAgent:
     def __init__(self, model: str = "llama3.1"):
@@ -16,14 +21,29 @@ class LocodeAgent:
             api_key="ollama",  # required, but unused
         )
         self.model = model
-        self.history = [
-            {"role": "system", "content": """You are a helpful AI coding assistant.
+        
+        # Construct system prompt with schema instruction
+        schema_json = AgentAction.model_json_schema()
+        self.system_prompt = f"""You are a helpful AI coding assistant.
 You can read files, write files, and run commands.
-Always use the provided tools to interact with the system.
-If you use a tool, output ONLY the JSON object for the tool call.
-Do NOT use markdown code blocks like ```python or ```json for the tool call.
-Just output the raw JSON object.
-"""}
+
+You must output your response as a valid JSON object matching the following schema:
+{json.dumps(schema_json, indent=2)}
+
+Explanations:
+- `thought`: Explain your reasoning and plan.
+- `action`: "tool" to use a tool, "finish" to end the task.
+- `tool_name`: Name of the tool (read_file, write_file, run_command). Required if action is "tool".
+- `tool_args`: Arguments for the tool. Required if action is "tool".
+  - write_file: {{"path": "filename", "content": "file content"}}
+  - read_file: {{"path": "filename"}}
+  - run_command: {{"command": "shell command"}}
+- `final_answer`: Final response to the user. Required if action is "finish".
+
+IMPORTANT: output ONLY the JSON object. Do not wrap it in markdown code blocks.
+"""
+        self.history = [
+            {"role": "system", "content": self.system_prompt}
         ]
 
     def run(self, instruction: str):
@@ -35,72 +55,61 @@ Just output the raw JSON object.
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=self.history,
-                    tools=TOOLS,
-                    tool_choice="auto",
+                    stream=True,
                 )
-            except Exception as e:
-                self.console.print(f"[bold red]Error connecting to LLM:[/bold red] {e}")
-                self.console.print("[yellow]Ensure Ollama is running (e.g., `ollama serve`) and the model is pulled.[/yellow]")
-                break
 
-            message = response.choices[0].message
-            self.console.print(f"[dim][Agent] Thinking... {message.content[:50] if message.content else ''}...[/dim]") 
+                full_response = ""
+                with Live(Text(""), refresh_per_second=4, console=self.console) as live:
+                    for chunk in response:
+                        if chunk.choices[0].delta.content:
+                            content = chunk.choices[0].delta.content
+                            full_response += content
+                            live.update(Text(full_response))
+                
+                self.console.print() # Newline
 
-            if message.tool_calls:
-                self.history.append(message)
-                for tool_call in message.tool_calls:
-                    function_name = tool_call.function.name
-                    function_args = json.loads(tool_call.function.arguments)
-                    self.console.print(f"[bold magenta][Agent] Calling tool:[/bold magenta] {function_name} with args: {function_args}")
-                    
-                    # Execute tool
-                    tool_result = self._execute_tool(function_name, function_args)
-                    
-                    self.history.append({
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": function_name,
-                        "content": str(tool_result),
-                    })
-            else:
-                # Fallback: Check if content is a JSON tool call (common in some local models)
-                tool_executed = False
+                # Parse JSON
                 try:
-                    content = message.content.strip()
-                    # Strip markdown code blocks if present
-                    if content.startswith("```") and content.endswith("```"):
-                        content = content.strip("`")
-                        if content.startswith("json"):
-                            content = content[4:]
-                        content = content.strip()
-                    
-                    # Basic check to see if it looks like JSON
-                    if content.startswith("{") and content.endswith("}"):
-                        data = json.loads(content)
-                        if "name" in data and "arguments" in data:
-                            function_name = data["name"]
-                            function_args = data["arguments"]
-                            self.console.print(f"[bold magenta][Agent] Calling tool (JSON fallback):[/bold magenta] {function_name} with args: {function_args}")
-                            
-                            # Execute tool
-                            tool_result = self._execute_tool(function_name, function_args)
-                            
-                            self.history.append(message)
-                            # Since we don't have a tool_call_id, we append the result as a user message to guide the model
-                            self.history.append({
-                                "role": "user",
-                                "content": f"Tool '{function_name}' output: {tool_result}"
-                            })
-                            tool_executed = True
-                except json.JSONDecodeError:
-                    pass
+                    # simplistic cleanup for code blocks if model ignores instruction
+                    cleaned_response = full_response.strip()
+                    if cleaned_response.startswith("```json"):
+                        cleaned_response = cleaned_response[7:]
+                    if cleaned_response.endswith("```"):
+                        cleaned_response = cleaned_response[:-3]
+                    cleaned_response = cleaned_response.strip()
 
-                if tool_executed:
+                    action_data = AgentAction.model_validate_json(cleaned_response)
+                except Exception as e:
+                    self.console.print(f"[red]Failed to parse JSON:[/red] {e}")
+                    # Give feedback to model
+                    self.history.append({"role": "assistant", "content": full_response})
+                    self.history.append({"role": "user", "content": f"Error: Your response was not valid JSON matching the schema. Error: {e}. Please try again."})
                     continue
 
-                self.history.append(message)
-                self.console.print(f"[bold green][Agent] Final Answer:[/bold green] {message.content}")
-                return message.content
+                self.console.print(f"[bold cyan]Thought:[/bold cyan] {action_data.thought}")
+
+                if action_data.action == "finish":
+                    self.console.print(f"[bold green]Final Answer:[/bold green] {action_data.final_answer}")
+                    self.history.append({"role": "assistant", "content": full_response})
+                    return action_data.final_answer
+
+                elif action_data.action == "tool":
+                    tool_name = action_data.tool_name
+                    tool_args = action_data.tool_args
+                    
+                    self.history.append({"role": "assistant", "content": full_response})
+                    
+                    self.console.print(f"[bold magenta]Action:[/bold magenta] Calling {tool_name} with {tool_args}")
+                    tool_result = self._execute_tool(tool_name, tool_args)
+                    self.console.print(f"[dim]Tool Output: {tool_result}[/dim]")
+                    self.history.append({"role": "user", "content": f"Tool Output: {tool_result}"})
+                    # Loop continues, model sees tool output and decides next step
+
+            except Exception as e:
+                self.console.print(f"[bold red]Error in agent loop:[/bold red] {e}")
+                import traceback
+                traceback.print_exc()
+                break
 
     def _execute_tool(self, name: str, args: Dict[str, Any]) -> str:
         current_dir = os.getcwd()
@@ -152,7 +161,6 @@ Just output the raw JSON object.
             if not Confirm.ask("Do you want to run this command?"):
                 return "Error: User cancelled command execution."
 
-            import subprocess
             try:
                 result = subprocess.run(command, shell=True, capture_output=True, text=True)
                 return f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
