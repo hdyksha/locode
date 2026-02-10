@@ -14,8 +14,9 @@ from .utils import is_safe_path, show_diff
 from .schema import AgentAction
 
 class LocodeAgent:
-    def __init__(self, model: str = "llama3.1"):
+    def __init__(self, model: str = "llama3.1", verbose: bool = False):
         self.console = Console()
+        self.verbose = verbose
         self.client = OpenAI(
             base_url="http://localhost:11434/v1",
             api_key="ollama",  # required, but unused
@@ -67,6 +68,9 @@ IMPORTANT: output ONLY the JSON object. Do not wrap it in markdown code blocks.
                             live.update(Text(full_response))
                 
                 self.console.print() # Newline
+
+                if self.verbose:
+                    self.console.print(f"[dim]Raw Response:\n{full_response}[/dim]")
 
                 # Parse JSON
                 try:

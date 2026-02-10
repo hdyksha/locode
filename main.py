@@ -9,13 +9,16 @@ console = Console()
 def main(
     instruction: str = typer.Argument(None, help="Initial instruction"),
     model: str = "llama3.1",
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show verbose output (raw LLM response)"),
     interactive: bool = typer.Option(False, "--interactive", "-i", help="Run in interactive mode")
 ):
     """
     Locode: A local coding agent.
     """
     console.print(f"[bold green]Starting Locode with model: {model}[/bold green]")
-    agent = LocodeAgent(model=model)
+    if verbose:
+        console.print("[dim]Verbose mode enabled[/dim]")
+    agent = LocodeAgent(model=model, verbose=verbose)
 
     if instruction:
         agent.run(instruction)
